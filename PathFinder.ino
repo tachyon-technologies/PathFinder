@@ -104,7 +104,6 @@ void loop() {
   avoidCollision();
   updateLocation();
   calc_course_from_magnometer();
-  
   if(mode.equals("SELF") && !state.equals("IGPS")){
     moveToDest();
     }
