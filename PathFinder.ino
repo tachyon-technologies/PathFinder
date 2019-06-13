@@ -56,17 +56,28 @@ TinyGPSPlus gps;
 // The serial connection to the GPS device
 SoftwareSerial ss(RXPin, TXPin);
 
+// For magnometer
+#include "Wire.h"
+#include "HMC5883L.h"
+HMC5883L compass;                                     //Copy the folder "HMC5883L" in the folder "C:\Program Files\Arduino\libraries" and restart the arduino IDE.
+
+float xv, yv, zv, cur_course;
+//calibrated_values[3] is the global array where the calibrated data will be placed
+//calibrated_values[3]: [0]=Xc, [1]=Yc, [2]=Zc
+float calibrated_values[3]; 
 
 String mode;              // STOP, SELF, MAN
-double dest_lat,dest_long,cur_lat, cur_long,cur_course,dest_course,cur_altitude,cur_speed, distanceMeters; 
+double dest_lat,dest_long,cur_lat, cur_long,dest_course,cur_altitude,cur_speed, distanceMeters; 
 int sat_count;
 String state;
 String command;
+int GPSSignal = A4;
+int collisionSignal = 9;
 void setup() {
   // put your setup code here, to run once:
   ss.begin(GPSBaud);
 
-  dest_lat = 6.7972243, dest_long = 79.8995026;
+  dest_lat = 6.7971231, dest_long = 79.8995026;
   mode = "SELF";
   pinMode(motor_left_positive, OUTPUT);
   pinMode(motor_left_negative, OUTPUT);  
@@ -74,7 +85,17 @@ void setup() {
   pinMode(motor_right_negative, OUTPUT);
 
   Serial.begin(9600);
-  
+
+  //Left Signal LED
+  pinMode(GPSSignal, OUTPUT);
+
+  // Right Signal LED
+  pinMode(collisionSignal, OUTPUT);
+
+  // Magnometer
+  Wire.begin();  
+  compass = HMC5883L();  
+  setupHMC5883L();
 }
 
 void loop() {
@@ -82,8 +103,9 @@ void loop() {
   smartDelayReadGPS(300);
   avoidCollision();
   updateLocation();
-
-  if(mode.equals("SELF")){
+  calc_course_from_magnometer();
+  
+  if(mode.equals("SELF") && !state.equals("IGPS")){
     moveToDest();
     }
   else if(mode.equals("MAN")){
@@ -95,8 +117,9 @@ void loop() {
  */
 void moveToDest(){
   double courseShift = cur_course- dest_course;
+  double directionSensitiveness = 10.0;
   if(courseShift>0){
-    if( courseShift< 180 && courseShift > 5.0){
+    if( courseShift< 180 && courseShift > directionSensitiveness){
         moveLeft();
       }
     else{
@@ -105,7 +128,7 @@ void moveToDest(){
       }    
     }
    else{
-      if(abs(courseShift) < 180 && abs(courseShift) > 5.0 ) {
+      if(abs(courseShift) < 180 && abs(courseShift) > directionSensitiveness ) {
         moveRight();
         state = "R";
         }
@@ -118,10 +141,13 @@ void moveToDest(){
     }
     if(distanceMeters > 1.0){
       moveForward();
+      smartDelayReadGPS(300);
+
     }
     else {
-      state = "D";
+      state = "S";
       moveStop();
+      mode = "STOP";
       }
   }
 
@@ -143,7 +169,7 @@ void execCommand(){
       smartDelayReadGPS(300);
       }
 
-    else if(command.equals("B")){
+    else if(command.equals  ("B")){
       moveRight();
       smartDelayReadGPS(300);
       }
@@ -174,7 +200,9 @@ void smartDelayReadGPS(unsigned long ms){
 void updateLocation(){
 
     if(gps.location.isValid()){
-      
+        
+        state = "GPS";
+
         cur_lat = gps.location.lat();
         cur_long = gps.location.lng();
         cur_course = gps.course.deg();
@@ -189,6 +217,10 @@ void updateLocation(){
         }
       else{
         Serial.println("Invalid GPS");
+        state = "IGPS";
+        digitalWrite(GPSSignal,HIGH);
+        smartDelayReadGPS(500);
+        digitalWrite(GPSSignal,LOW);
         }
     
   }
@@ -198,16 +230,24 @@ void updateLocation(){
 void avoidCollision(){
   
    collisionDistance = sonar.ping_cm();
-   if((collisionDistance<30)&&(collisionDistance>3))
+   if((collisionDistance<30) && collisionDistance >3)
    {
-        state = "COL";
-        moveBackward();
-        smartDelayReadGPS(1000);
-        moveLeft();
-        smartDelayReadGPS(300);
-        moveForward();
-        smartDelayReadGPS(1000);   
 
+    state = "COL";
+    moveBackward();
+    Serial.println("Collision");
+    digitalWrite(collisionSignal, HIGH);
+    smartDelayReadGPS(1000);
+    digitalWrite(collisionSignal, LOW);
+    while(collisionDistance<30 && collisionDistance >3){
+        moveLeft();
+        collisionDistance = sonar.ping_cm();
+        digitalWrite(collisionSignal, HIGH);
+        smartDelayReadGPS(100);
+        digitalWrite(collisionSignal, LOW);      
+      }
+     moveForward();
+     smartDelayReadGPS(1000);   
     }
     else{
         smartDelayReadGPS(1000);
@@ -272,4 +312,77 @@ void moveStop()
     digitalWrite(motor_right_negative, HIGH); 
 }
 
+//transformation(float uncalibrated_values[3]) is the function of the magnetometer data correction 
+//uncalibrated_values[3] is the array of the non calibrated magnetometer data
+//uncalibrated_values[3]: [0]=Xnc, [1]=Ync, [2]=Znc
+void transformation(float uncalibrated_values[3])    
+{
+  //calibration_matrix[3][3] is the transformation matrix
+  //replace M11, M12,..,M33 with your transformation matrix data
+  double calibration_matrix[3][3] = 
+  {
+    {11.049, -17.341, -24.102},
+    {64.505, 39.692, 37.927},
+    {40.788, 4.177, 27.529}  
+  };
+  //bias[3] is the bias
+  //replace Bx, By, Bz with your bias data
+  double bias[3] = 
+  {
+    -124.567,
+    -298.841,
+    176.174
+  };  
+  //calculation
+  for (int i=0; i<3; ++i) uncalibrated_values[i] = uncalibrated_values[i] - bias[i];
+  float result[3] = {0, 0, 0};
+  for (int i=0; i<3; ++i)
+    for (int j=0; j<3; ++j)
+      result[i] += calibration_matrix[i][j] * uncalibrated_values[j];
+  for (int i=0; i<3; ++i) calibrated_values[i] = result[i];
+}
+
+void setupHMC5883L()
+{  
+  compass.SetScale(0.88);
+  compass.SetMeasurementMode(Measurement_Continuous);
+}
+ 
+void getHeading()
+{ 
+  MagnetometerRaw raw = compass.ReadRawAxis();
+  xv = (float)raw.XAxis;
+  yv = (float)raw.YAxis;
+  zv = (float)raw.ZAxis;
+}
+
+
+void calc_course_from_magnometer(){
+  
+  float values_from_magnetometer[3];
+  float heading;
+  getHeading();
+  values_from_magnetometer[0] = xv;
+  values_from_magnetometer[1] = yv;
+  values_from_magnetometer[2] = zv;
+  transformation(values_from_magnetometer);
+
+  heading = atan2(calibrated_values[1],calibrated_values[0]);
+  // Once you have your heading, you must then add your 'Declination Angle', which is the 'Error' of the magnetic field in your location.
+  // Find yours here: http://www.magnetic-declination.com/
+  // Mine is: 2� 37' W, which is 2.617 Degrees, or (which we need) 0.0456752665 radians, I will use 0.0457
+  // If you cannot find your Declination, comment out these two lines, your compass will be slightly off.
+  float declinationAngle = 0.0457;
+  heading += declinationAngle;
+    // Correct for when signs are reversed.
+  if(heading < 0)
+    heading += 2*PI;
+    
+  // Check for wrap due to addition of declination.
+  if(heading > 2*PI)
+    heading -= 2*PI;
+   
+  // Convert radians to degrees for readability.
+  cur_course = heading * 180/M_PI; 
+  }
 
