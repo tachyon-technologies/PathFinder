@@ -16,9 +16,9 @@ Sonar Trig  D4
 
 ***/
 /***
-Setup GPS shied
-TX          D3
-RX          D2
+Setup GPS shied         In Mega
+TX          D3            D13
+RX          D2            D12
 
 Setup Magnometer
 SCL         SCL
@@ -32,6 +32,12 @@ Set declinationAngle ;
  Mine is: 2* 1' W, which is ~2 Degrees, or (which we need) PI*2/180=0.03 radians
  If you cannot find your Declination, comment out these two lines, your compass will be slightly off.
 ***/
+
+/*
+ * Setup Sim Module for broadband communication
+ * For Sim 900 Tx=7, Rx=8         ON Mega 10,11
+ * For Sim7000 Tx=8, Rx=7
+ */
 
 #include <NewPing.h>
 
@@ -49,17 +55,25 @@ NewPing sonar(trig, echo, MAX_DISTANCE);
 #include <TinyGPS++.h>
 #include <SoftwareSerial.h>
 
-static const int RXPin = 3, TXPin = 2;
+//static const int RXPin = 3, TXPin = 2;
+static const int RXPin = 13, TXPin = 12;      //In Mega
 static const uint32_t GPSBaud = 9600;
+
 // The TinyGPS++ object
 TinyGPSPlus gps;
 // The serial connection to the GPS device
-SoftwareSerial ss(RXPin, TXPin);
+SoftwareSerial gpsSoftSerial(RXPin, TXPin);
 
 // For magnometer
-#include "Wire.h"
-#include "HMC5883L.h"
+//#include "Wire.h"
+#include <HMC5883L.h>
 HMC5883L compass;                                     //Copy the folder "HMC5883L" in the folder "C:\Program Files\Arduino\libraries" and restart the arduino IDE.
+
+#include <Wire.h>
+#include <DFRobot_SIM7000.h>
+
+SoftwareSerial simClient(10,11);
+DFRobot_SIM7000 sim7000;
 
 float xv, yv, zv, cur_course;
 //calibrated_values[3] is the global array where the calibrated data will be placed
@@ -73,19 +87,20 @@ String state;
 String command;
 int GPSSignal = A4;
 int collisionSignal = 9;
-void setup() {
-  // put your setup code here, to run once:
-  ss.begin(GPSBaud);
 
+void setup() {
+//   GPS shield serial client
+  gpsSoftSerial.begin(GPSBaud);
+//
   dest_lat = 6.7971231, dest_long = 79.8995026;
   mode = "SELF";
   pinMode(motor_left_positive, OUTPUT);
   pinMode(motor_left_negative, OUTPUT);  
   pinMode(motor_right_positive, OUTPUT); 
   pinMode(motor_right_negative, OUTPUT);
-
-  Serial.begin(9600);
-
+//
+  Serial.begin(115200);
+//
   //Left Signal LED
   pinMode(GPSSignal, OUTPUT);
 
@@ -96,20 +111,40 @@ void setup() {
   Wire.begin();  
   compass = HMC5883L();  
   setupHMC5883L();
+
+  //SIM900
+  simClient.begin(19200);
+  delay(500);
+
+  initSIM();
+  connectGPRS();
+
+  smartDelayReadGPS(300);
+  updateLocation();
+  sendGETRequest("http://ancient-fjord-80490.herokuapp.com/device-pos-details?lat=3.652456&long=2.542663&direction=25.455&sat="+String(sat_count)+"&speed="+String(cur_speed)+"&mode="+String(mode),10);
+  smartDelayReadGPS(1000);
+  readGetResponse();
+
+
 }
 
 void loop() {
-  Serial.println("asda");
+
+//  String requestLink = 
+  sendGETRequest("http://ancient-fjord-80490.herokuapp.com/device-pos-details?lat="+String(cur_lat)+"&long="+String(cur_long)+"&direction="+String(cur_course)+"&sat="+String(sat_count)+"&speed="+String(cur_speed)+"&mode="+mode,10);
+
   smartDelayReadGPS(300);
   avoidCollision();
   updateLocation();
-  calc_course_from_magnometer();
-  if(mode.equals("SELF") && !state.equals("IGPS")){
+//  calc_course_from_magnometer();
+  if(mode.equals("S") && !state.equals("IGPS")){
     moveToDest();
     }
-  else if(mode.equals("MAN")){
+  else if(mode.equals("M")){
    execCommand(); 
    }
+  readGetResponse();
+
 }
 /*
  * Move to the destination location (dest Lat, dest_long, course)
@@ -183,12 +218,19 @@ void execCommand(){
  */
 void smartDelayReadGPS(unsigned long ms){
   
-  unsigned long start = millis();
-  do 
-  {
-    while (ss.available())
-      gps.encode(ss.read());
-  } while (millis() - start < ms);
+  if(ms >=50){
+      gpsSoftSerial.listen();
+      unsigned long start = millis();
+      do 
+      {
+        while (gpsSoftSerial.available())
+          gps.encode(gpsSoftSerial.read());
+      } while (millis() - start < ms);
+      simClient.listen();
+    }
+   else{
+      delay(ms);
+    }
  }
 
 
@@ -385,3 +427,141 @@ void calc_course_from_magnometer(){
   cur_course = heading * 180/M_PI; 
   }
 
+
+/*
+ *Setting the GPRS settings for the Sim Module
+ * 
+ */
+
+void connectGPRS()
+{ 
+//  Serial.println("connection type");
+  sendCommand("AT+SAPBR=3,1,\"Contype\",\"GPRS\"",100);
+
+//  Serial.println("Set APN");
+  sendCommand("AT+SAPBR=3,1,\"APN\",\"ppwap\"",100);//APN
+  
+  sendCommand("AT+SAPBR=1,1",100);
+
+  sendCommand("AT+SAPBR=2,1",100);
+}
+
+void sendGETRequest(String URL, int delayt){
+   
+//  Serial.println("Initi HTTP");
+  sendCommand("AT+HTTPINIT",100);
+
+//  Serial.println("Opening Bearer Profile");
+  sendCommand("AT+HTTPPARA=\"CID\",1",100);
+  String requestLink = "AT\+HTTPPARA=\"URL\",\""+URL+"\"";
+  Serial.println(requestLink);
+//  sendCommand("AT+HTTPPARA=\"URL\",\"http://xxx.xxx.xx/Listener/\"");//Public server IP address
+  sendCommand(requestLink,100);//Public server address
+  
+//  Serial.println("Set content type");
+//  sendCommand("AT+HTTPPARA=\"CONTENT\",\"application/json\"",100);
+  
+//  simClient.println("AT+HTTPACTION=0");
+//  Serial.println("send get request");
+  sendCommand("AT+HTTPACTION=0",delayt);
+
+//  sendCommand("AT+HTTPREAD=0,142",1000);
+
+  }
+
+
+void readGetResponse(){
+
+  simClient.println("AT+HTTPREAD=0,142");
+  delay(200);
+
+  String resp = "|";
+  while(simClient.available()!=0){
+    
+    resp += simClient.readStringUntil('\n')+"|";
+    }
+//    Serial.println(resp);
+    resp = getValue(resp,'|',3);
+    if(!resp.equals("")){
+      float destLat = getValue(resp,',',0).toFloat();
+      float destLong = getValue(resp,',',1).toFloat();
+      String rMode = getValue(resp,',',2);
+      String rCommand = getValue(resp,',',3);
+      Serial.println("Response results dl : "+String(destLat) + " DLo : "+ String(destLong) + " Mode : " + mode + " Command : " + command);
+      if(destLat !=0){
+        dest_lat = destLat;
+        }
+      if(destLong !=0){
+        dest_long = destLong;
+        }
+
+      if(!rMode.equals("")){
+        mode = rMode;
+        }
+      if(!rCommand.equals("")){
+        command = rCommand;
+        }
+      }
+
+//  Serial.println("Terminating");
+  sendCommand("AT+HTTPTERM",100);
+
+  }
+void ShowSerialData()
+{
+//  readInFromSIM = "";
+ while(simClient.available()!=0)
+  {
+//    readInFromSIM+= simClient.readString();
+//  Serial.println(simClient.readStringUntil('\n'));
+    Serial.write(simClient.read());
+  }
+//  Serial.println(readInFromSIM);
+}
+
+
+void initSIM(){
+
+//  turnOnBoard();
+
+  //Set Baud rate to 19200 for reliable communication
+//  sendCommand("AT+IPR=19200",200);
+    sim7000.begin(simClient);
+    Serial.println("Turn ON SIM7000......");
+    if(sim7000.turnON()){                                       //Turn ON SIM7000
+        Serial.println("Turn ON !");
+    }
+
+    Serial.println("Check SIM card......");
+    if(sim7000.checkSIMStatus()){                               //Check SIM card
+        Serial.println("SIM card READY");
+    }else{
+        Serial.println("SIM card ERROR, Check if you have insert SIM card and restart SIM7000");
+        while(1);
+    }
+  }
+
+void sendCommand(String command,int delayTime){
+  
+  simClient.println(command);
+  smartDelayReadGPS(delayTime);
+//  readInFromSIM = "";
+  ShowSerialData();
+  }
+
+String getValue(String data, char separator, int index)
+{
+  int found = 0;
+  int strIndex[] = {0, -1};
+  int maxIndex = data.length()-1;
+
+  for(int i=0; i<=maxIndex && found<=index; i++){
+    if(data.charAt(i)==separator || i==maxIndex){
+        found++;
+        strIndex[0] = strIndex[1]+1;
+        strIndex[1] = (i == maxIndex) ? i+1 : i;
+    }
+  }
+
+  return found>index ? data.substring(strIndex[0], strIndex[1]) : "";
+}
