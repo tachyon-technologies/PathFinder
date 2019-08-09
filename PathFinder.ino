@@ -64,17 +64,20 @@ TinyGPSPlus gps;
 // The serial connection to the GPS device
 SoftwareSerial gpsSoftSerial(RXPin, TXPin);
 
-// For magnometer
-//#include "Wire.h"
-#include <HMC5883L.h>
-HMC5883L compass;                                     //Copy the folder "HMC5883L" in the folder "C:\Program Files\Arduino\libraries" and restart the arduino IDE.
-
 #include <Wire.h>
 #include <DFRobot_SIM7000.h>
 
 SoftwareSerial simClient(10,11);
 DFRobot_SIM7000 sim7000;
 
+// For magnometer
+#define addr 0x1E //I2C Address for The HMC5983
+/* Once you have your heading, you must then add your 'Declination Angle', which is the 'Error' of the magnetic field in your location.
+ * Find yours here: http://www.magnetic-declination.com/
+ * Mine is: 2� 37' W, which is 2.617 Degrees, or (which we need) 0.0457 radians, I will use 0.0457
+ * If you cannot find your Declination, comment out this line below, your compass will be slightly off.
+ */
+#define declinationAngle 0.0457;
 float xv, yv, zv, cur_course;
 //calibrated_values[3] is the global array where the calibrated data will be placed
 //calibrated_values[3]: [0]=Xc, [1]=Yc, [2]=Zc
@@ -108,9 +111,7 @@ void setup() {
   pinMode(collisionSignal, OUTPUT);
 
   // Magnometer
-  Wire.begin();  
-  compass = HMC5883L();  
-  setupHMC5883L();
+  setupHMC5983L();
 
   //SIM900
   simClient.begin(19200);
@@ -203,7 +204,7 @@ void execCommand(){
       smartDelayReadGPS(300);
       }
 
-    else if(command.equals  ("B")){
+    else if(command.equals("B")){
       moveRight();
       smartDelayReadGPS(300);
       }
@@ -362,17 +363,17 @@ void transformation(float uncalibrated_values[3])
   //replace M11, M12,..,M33 with your transformation matrix data
   double calibration_matrix[3][3] = 
   {
-    {11.049, -17.341, -24.102},
-    {64.505, 39.692, 37.927},
-    {40.788, 4.177, 27.529}  
+    {1.44 , 0.079,  0.227},
+    {-0.043,  1.742,  0.069},
+    {0.386, 0.317,  1.647}  
   };
   //bias[3] is the bias
   //replace Bx, By, Bz with your bias data
   double bias[3] = 
   {
-    -124.567,
-    -298.841,
-    176.174
+    -148.135,
+    -518.714,
+    286.565
   };  
   //calculation
   for (int i=0; i<3; ++i) uncalibrated_values[i] = uncalibrated_values[i] - bias[i];
@@ -383,18 +384,37 @@ void transformation(float uncalibrated_values[3])
   for (int i=0; i<3; ++i) calibrated_values[i] = result[i];
 }
 
-void setupHMC5883L()
+void setupHMC5983L()
 {  
-  compass.SetScale(0.88);
-  compass.SetMeasurementMode(Measurement_Continuous);
+  Wire.begin();
+  Wire.beginTransmission(addr); //start talking
+  Wire.write(0x02); // Set the Register
+  Wire.write(0x00); // Tell the HMC5883 to Continuously Measure
+  Wire.endTransmission();  
 }
  
 void getHeading()
 { 
-  MagnetometerRaw raw = compass.ReadRawAxis();
-  xv = (float)raw.XAxis;
-  yv = (float)raw.YAxis;
-  zv = (float)raw.ZAxis;
+  int x,y,z;
+  //Tell the HMC what regist to begin writing data into
+  Wire.beginTransmission(addr);
+  Wire.write(0x03);
+  Wire.endTransmission();
+  //Read the data
+  Wire.requestFrom(addr, 6);
+  if(6<=Wire.available())
+  {
+    x = Wire.read()<<8; //MSB  x
+    x |= Wire.read(); //LSB  x
+    z = Wire.read()<<8; //MSB  z
+    z |= Wire.read(); //LSB z
+    y = Wire.read()<<8; //MSB y
+    y |= Wire.read(); //LSB y
+  
+    xv = x;
+    yv = y;
+    zv = z;
+  }
 }
 
 
@@ -409,12 +429,11 @@ void calc_course_from_magnometer(){
   transformation(values_from_magnetometer);
 
   heading = atan2(calibrated_values[1],calibrated_values[0]);
-  // Once you have your heading, you must then add your 'Declination Angle', which is the 'Error' of the magnetic field in your location.
-  // Find yours here: http://www.magnetic-declination.com/
-  // Mine is: 2� 37' W, which is 2.617 Degrees, or (which we need) 0.0456752665 radians, I will use 0.0457
-  // If you cannot find your Declination, comment out these two lines, your compass will be slightly off.
-  float declinationAngle = 0.0457;
-  heading += declinationAngle;
+
+  #ifdef declinationAngle
+    heading += declinationAngle;
+  #endif
+  
     // Correct for when signs are reversed.
   if(heading < 0)
     heading += 2*PI;
