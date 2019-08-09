@@ -26,12 +26,7 @@ SDA         SDA
 
 Set declinationAngle ;
 
- float declinationAngle = 0.03;
- Once you have your heading, you must then add your 'Declination Angle', which is the 'Error' of the magnetic field in your location.
- Find yours here: http://www.magnetic-declination.com/
- Mine is: 2* 1' W, which is ~2 Degrees, or (which we need) PI*2/180=0.03 radians
- If you cannot find your Declination, comment out these two lines, your compass will be slightly off.
-***/
+**/
 
 /*
  * Setup Sim Module for broadband communication
@@ -83,6 +78,24 @@ float xv, yv, zv, cur_course;
 //calibrated_values[3]: [0]=Xc, [1]=Yc, [2]=Zc
 float calibrated_values[3]; 
 
+//calibration_matrix[3][3] is the transformation matrix
+  //replace M11, M12,..,M33 with your transformation matrix data
+  double calibration_matrix[3][3] = 
+  {
+    {1.44 , 0.079,  0.227},
+    {-0.043,  1.742,  0.069},
+    {0.386, 0.317,  1.647}  
+  };
+  //bias[3] is the bias
+  //replace Bx, By, Bz with your bias data
+  double bias[3] = 
+  {
+    -148.135,
+    -518.714,
+    286.565
+  };  
+
+  
 String mode;              // STOP, SELF, MAN
 double dest_lat,dest_long,cur_lat, cur_long,dest_course,cur_altitude,cur_speed, distanceMeters; 
 int sat_count;
@@ -137,7 +150,7 @@ void loop() {
   smartDelayReadGPS(300);
   avoidCollision();
   updateLocation();
-//  calc_course_from_magnometer();
+  calc_course_from_magnometer();
   if(mode.equals("S") && !state.equals("IGPS")){
     moveToDest();
     }
@@ -200,16 +213,24 @@ void execCommand(){
       smartDelayReadGPS(300);
     }
     else if(command.equals("F")){
-      moveRight();
+      moveForward();
       smartDelayReadGPS(300);
       }
 
     else if(command.equals("B")){
-      moveRight();
+      moveBackward();
       smartDelayReadGPS(300);
       }
     else if(command.equals("S")){
-      moveBackward();
+      moveStop();
+      smartDelayReadGPS(300);
+      }
+     else if(command.equals("P")){
+      pullLeaver();
+      smartDelayReadGPS(300);
+      }
+    else if(command.equals("Q")){
+      blinkLED();
       smartDelayReadGPS(300);
       }
   }
@@ -354,27 +375,30 @@ void moveStop()
     digitalWrite(motor_right_negative, HIGH); 
 }
 
+/******************************
+ * Pull the triangle Leaver *
+ * ***************************/
+void pullLeaver(){
+  
+  Serial.println("Pulling leaver");
+  
+}
+
+/******************************
+ * Blink the signalling LED *
+ * ***************************/
+void blinkLED(){
+  
+  Serial.println("Blinking LED");
+  
+}
+
 //transformation(float uncalibrated_values[3]) is the function of the magnetometer data correction 
 //uncalibrated_values[3] is the array of the non calibrated magnetometer data
 //uncalibrated_values[3]: [0]=Xnc, [1]=Ync, [2]=Znc
 void transformation(float uncalibrated_values[3])    
 {
-  //calibration_matrix[3][3] is the transformation matrix
-  //replace M11, M12,..,M33 with your transformation matrix data
-  double calibration_matrix[3][3] = 
-  {
-    {1.44 , 0.079,  0.227},
-    {-0.043,  1.742,  0.069},
-    {0.386, 0.317,  1.647}  
-  };
-  //bias[3] is the bias
-  //replace Bx, By, Bz with your bias data
-  double bias[3] = 
-  {
-    -148.135,
-    -518.714,
-    286.565
-  };  
+  
   //calculation
   for (int i=0; i<3; ++i) uncalibrated_values[i] = uncalibrated_values[i] - bias[i];
   float result[3] = {0, 0, 0};
